@@ -1,8 +1,9 @@
 package com.example.epubreader.presentation.screens
 
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.pager.HorizontalPager
+import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
@@ -14,13 +15,18 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.epubreader.presentation.viewmodel.ReaderViewModel
 import androidx.lifecycle.compose.LifecycleResumeEffect
+import androidx.compose.ui.text.TextMeasurer
+import androidx.compose.ui.text.rememberTextMeasurer
+import androidx.compose.ui.unit.Constraints
+import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.text.TextStyle
 
 /**
  * Schermata di lettura con tracking automatico
- * 
+ *
  * Il tracking inizia automaticamente all'apertura e si ferma alla chiusura
  */
-@OptIn(ExperimentalMaterial3Api::class)
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class)
 @Composable
 fun ReaderScreen(
     viewModel: ReaderViewModel,
@@ -32,10 +38,9 @@ fun ReaderScreen(
     val fontSize by viewModel.fontSize.collectAsState()
     val isDarkMode by viewModel.isDarkMode.collectAsState()
     val elapsedTime by viewModel.elapsedTime.collectAsState()
-    
+
     var showSettings by remember { mutableStateOf(false) }
-    val scrollState = rememberScrollState()
-    
+
     // Gestione lifecycle automatica per pause/resume
     LifecycleResumeEffect {
         viewModel.resumeReading()
@@ -43,25 +48,25 @@ fun ReaderScreen(
             viewModel.pauseReading()
         }
     }
-    
+
     // Cleanup quando si esce
     DisposableEffect(Unit) {
         onDispose {
             viewModel.stopReading()
         }
     }
-    
+
     val colorScheme = if (isDarkMode) {
         darkColorScheme()
     } else {
         lightColorScheme()
     }
-    
+
     MaterialTheme(colorScheme = colorScheme) {
         Scaffold(
             topBar = {
                 TopAppBar(
-                    title = { 
+                    title = {
                         Column {
                             Text(book?.title ?: "", style = MaterialTheme.typography.titleMedium)
                             Text(
@@ -93,39 +98,58 @@ fun ReaderScreen(
                 )
             }
         ) { padding ->
-            Box(modifier = Modifier.padding(padding)) {
-                // Contenuto del capitolo
+            BoxWithConstraints(modifier = Modifier.padding(padding)) {
                 val currentChapter = chapters.getOrNull(currentChapterIndex)
                 if (currentChapter != null) {
-                    Column(
-                        modifier = Modifier
-                            .fillMaxSize()
-                            .verticalScroll(scrollState)
-                            .padding(16.dp)
-                    ) {
-                        Text(
-                            text = currentChapter.title,
-                            style = MaterialTheme.typography.headlineSmall,
-                            modifier = Modifier.padding(bottom = 16.dp)
+                    val textMeasurer = rememberTextMeasurer()
+                    val paginatedContent = remember(currentChapter, fontSize, maxWidth, maxHeight) {
+                        paginate(
+                            text = AnnotatedString(currentChapter.content),
+                            textMeasurer = textMeasurer,
+                            constraints = Constraints(
+                                maxWidth = maxWidth.value.toInt(),
+                                maxHeight = maxHeight.value.toInt()
+                            ),
+                            style = TextStyle(
+                                fontSize = fontSize.sp,
+                                lineHeight = (fontSize * 1.5).sp,
+                                textAlign = TextAlign.Justify
+                            )
                         )
-                        
-                        Text(
-                            text = currentChapter.content,
-                            fontSize = fontSize.sp,
-                            lineHeight = (fontSize * 1.5).sp,
-                            textAlign = TextAlign.Justify
-                        )
-                        
-                        // Aggiorna progresso basato sullo scroll
-                        LaunchedEffect(scrollState.value) {
-                            val progress = if (scrollState.maxValue > 0) {
-                                scrollState.value.toFloat() / scrollState.maxValue
+                    }
+
+                    if (paginatedContent.isNotEmpty()) {
+                        val pagerState = rememberPagerState(pageCount = { paginatedContent.size })
+
+                        HorizontalPager(
+                            state = pagerState,
+                            modifier = Modifier.fillMaxSize()
+                        ) { page ->
+                            Column(
+                                modifier = Modifier
+                                    .fillMaxSize()
+                                    .padding(16.dp)
+                            ) {
+                                Text(
+                                    text = currentChapter.title,
+                                    style = MaterialTheme.typography.headlineSmall,
+                                    modifier = Modifier.padding(bottom = 16.dp)
+                                )
+                                Text(
+                                    text = paginatedContent[page]
+                                )
+                            }
+                        }
+
+                        LaunchedEffect(pagerState.currentPage) {
+                            val progress = if (paginatedContent.size > 1) {
+                                pagerState.currentPage.toFloat() / (paginatedContent.size - 1)
                             } else 0f
                             viewModel.updateChapterProgress(progress)
                         }
                     }
                 }
-                
+
                 // Panel impostazioni
                 if (showSettings) {
                     ReaderSettingsPanel(
@@ -140,6 +164,47 @@ fun ReaderScreen(
             }
         }
     }
+}
+
+private fun paginate(
+    text: AnnotatedString,
+    textMeasurer: TextMeasurer,
+    constraints: Constraints,
+    style: TextStyle
+): List<AnnotatedString> {
+    if (text.isEmpty() || constraints.maxWidth <= 0 || constraints.maxHeight <= 0) {
+        return emptyList()
+    }
+
+    val pages = mutableListOf<AnnotatedString>()
+    var currentOffset = 0
+
+    while (currentOffset < text.length) {
+        val result = textMeasurer.measure(
+            text = text.subSequence(currentOffset, text.length),
+            style = style,
+            constraints = constraints
+        )
+
+        val lastCharIndex = result.layoutInput.text.length - 1
+        val didOverflow = result.didOverflowHeight
+
+        val breakIndex = if (didOverflow) {
+            result.getLineEnd(result.lineCount - 2, visibleEnd = true)
+        } else {
+            lastCharIndex
+        }
+
+        var adjustedBreakIndex = text.subSequence(currentOffset, currentOffset + breakIndex).lastIndexOf(' ')
+        if (adjustedBreakIndex == -1) {
+            adjustedBreakIndex = breakIndex
+        }
+
+        pages.add(text.subSequence(currentOffset, currentOffset + adjustedBreakIndex))
+        currentOffset += adjustedBreakIndex
+    }
+
+    return pages
 }
 
 @Composable
@@ -163,9 +228,9 @@ fun ReaderBottomBar(
             ) {
                 Icon(Icons.Default.NavigateBefore, "Previous")
             }
-            
+
             Text("Chapter $currentChapter / $totalChapters")
-            
+
             IconButton(
                 onClick = onNextChapter,
                 enabled = hasNext
@@ -194,9 +259,9 @@ fun ReaderSettingsPanel(
     ) {
         Column(modifier = Modifier.padding(16.dp)) {
             Text("Reading Settings", style = MaterialTheme.typography.titleLarge)
-            
+
             Spacer(modifier = Modifier.height(16.dp))
-            
+
             // Font size
             Row(
                 modifier = Modifier.fillMaxWidth(),
@@ -214,7 +279,7 @@ fun ReaderSettingsPanel(
                     }
                 }
             }
-            
+
             // Dark mode
             Row(
                 modifier = Modifier.fillMaxWidth(),
@@ -224,9 +289,9 @@ fun ReaderSettingsPanel(
                 Text("Dark Mode")
                 Switch(checked = isDarkMode, onCheckedChange = { onToggleDarkMode() })
             }
-            
+
             Spacer(modifier = Modifier.height(16.dp))
-            
+
             Button(onClick = onDismiss, modifier = Modifier.fillMaxWidth()) {
                 Text("Close")
             }
@@ -238,7 +303,7 @@ private fun formatElapsedTime(millis: Long): String {
     val seconds = (millis / 1000) % 60
     val minutes = (millis / (1000 * 60)) % 60
     val hours = millis / (1000 * 60 * 60)
-    
+
     return when {
         hours > 0 -> String.format("%d:%02d:%02d", hours, minutes, seconds)
         minutes > 0 -> String.format("%d:%02d", minutes, seconds)

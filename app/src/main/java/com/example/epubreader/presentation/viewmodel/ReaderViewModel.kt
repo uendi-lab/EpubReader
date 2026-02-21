@@ -31,9 +31,6 @@ class ReaderViewModel(
     private val epubParser: EpubParser
 ) : ViewModel() {
     
-    // Reading Tracker (gestisce tracking automatico)
-    private val readingTracker = ReadingTracker()
-    
     // Libro corrente
     val book: StateFlow<Book?> = bookRepository.getBookById(bookId)
         .stateIn(
@@ -62,8 +59,8 @@ class ReaderViewModel(
     val isDarkMode: StateFlow<Boolean> = _isDarkMode.asStateFlow()
     
     // Stato tracking
-    val trackingState = readingTracker.trackingState
-    val elapsedTime = readingTracker.elapsedTime
+    val trackingState = ReadingTracker.trackingState
+    val elapsedTime = ReadingTracker.elapsedTime
     
     // Stato UI
     private val _uiState = MutableStateFlow<UiState>(UiState.Loading)
@@ -123,7 +120,7 @@ class ReaderViewModel(
             
             // Avvia tracking automatico
             val currentBook = book.value ?: return@launch
-            readingTracker.startTracking(bookId, currentBook.currentPosition)
+            ReadingTracker.startTracking(bookId, currentBook.currentPosition)
             
             // Crea sessione nel database
             sessionRepository.startSession(bookId, currentBook.currentPosition)
@@ -134,14 +131,14 @@ class ReaderViewModel(
      * Mette in pausa la lettura (chiamata quando app va in background)
      */
     fun pauseReading() {
-        readingTracker.pauseTracking()
+        ReadingTracker.pauseTracking()
     }
     
     /**
      * Riprende la lettura (chiamata quando app torna in foreground)
      */
     fun resumeReading() {
-        readingTracker.resumeTracking()
+        ReadingTracker.resumeTracking()
     }
     
     /**
@@ -150,7 +147,7 @@ class ReaderViewModel(
     fun stopReading() {
         viewModelScope.launch {
             // Ferma il tracker e ottieni i dati della sessione
-            val sessionData = readingTracker.stopTracking()
+            val sessionData = ReadingTracker.stopTracking()
             
             if (sessionData != null) {
                 // Chiudi la sessione nel database
@@ -234,8 +231,8 @@ class ReaderViewModel(
             )
             
             // Aggiorna tracker
-            val pagesRead = calculatePagesRead(readingTracker.currentSession.value?.startPosition ?: 0, position)
-            readingTracker.updatePosition(position, pagesRead)
+            val pagesRead = calculatePagesRead(ReadingTracker.currentSession.value?.startPosition ?: 0, position)
+            ReadingTracker.updatePosition(position, pagesRead)
         }
     }
     

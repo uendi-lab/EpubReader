@@ -15,7 +15,7 @@ import kotlinx.coroutines.flow.asStateFlow
  * 
  * NON richiede pressione di pulsanti start/stop da parte dell'utente.
  */
-class ReadingTracker {
+object ReadingTracker {
     
     /**
      * Stato del tracker

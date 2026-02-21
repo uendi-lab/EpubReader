@@ -4,9 +4,12 @@ import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.net.Uri
+import android.text.Html
 import java.io.File
 import java.io.FileOutputStream
 import java.util.zip.ZipInputStream
+import org.xmlpull.v1.XmlPullParser
+import org.xmlpull.v1.XmlPullParserFactory
 
 /**
  * Parser per file EPUB
@@ -51,7 +54,8 @@ class EpubParser(private val context: Context) {
         var author = "Unknown Author"
         var coverImagePath: String? = null
         val chapters = mutableListOf<Chapter>()
-        val htmlFiles = mutableListOf<Pair<String, String>>() // filename to content
+        val htmlFiles = mutableMapOf<String, String>() // filename to content
+        var tocFileContent: String? = null
         
         // Estrai file ZIP (EPUB è un ZIP)
         ZipInputStream(inputStream).use { zipStream ->
@@ -79,9 +83,14 @@ class EpubParser(private val context: Context) {
                     
                     // File HTML/XHTML (contenuto capitoli)
                     (entryName.endsWith(".html") || entryName.endsWith(".xhtml") || 
-                     entryName.endsWith(".htm")) && !entryName.contains("nav") -> {
+                     entryName.endsWith(".htm")) -> {
                         val content = zipStream.readBytes().toString(Charsets.UTF_8)
-                        htmlFiles.add(entryName to content)
+                        htmlFiles[entryName] = content
+                    }
+
+                    // Table of Contents
+                    entryName.endsWith("toc.ncx") || entryName.endsWith("nav.xhtml") -> {
+                        tocFileContent = zipStream.readBytes().toString(Charsets.UTF_8)
                     }
                 }
                 
@@ -92,27 +101,34 @@ class EpubParser(private val context: Context) {
         
         inputStream.close()
         
-        // Converti HTML files in capitoli
-        htmlFiles.sortedBy { it.first }.forEachIndexed { index, (filename, html) ->
-            val cleanContent = cleanHtmlContent(html)
-            if (cleanContent.length > 100) { // Solo capitoli con contenuto significativo
-                val wordCount = cleanContent.split("\\s+".toRegex()).size
-                val chapterTitle = extractTitle(html) ?: "Chapter ${index + 1}"
-                
-                chapters.add(
-                    Chapter(
-                        index = index,
-                        title = chapterTitle,
-                        content = cleanContent,
-                        wordCount = wordCount
+        // Parse table of contents
+        val parsedChapters = tocFileContent?.let { parseTableOfContents(it, htmlFiles) } ?: emptyList()
+
+        if (parsedChapters.isNotEmpty()) {
+            chapters.addAll(parsedChapters)
+        } else {
+            // Fallback for books without a standard TOC
+            htmlFiles.entries.sortedBy { it.key }.forEachIndexed { index, (filename, html) ->
+                val cleanContent = cleanHtmlContent(html)
+                if (cleanContent.length > 100) { // Solo capitoli con contenuto significativo
+                    val wordCount = cleanContent.split("\\s+".toRegex()).size
+                    val chapterTitle = extractTitle(html) ?: "Chapter ${index + 1}"
+                    
+                    chapters.add(
+                        Chapter(
+                            index = index,
+                            title = chapterTitle,
+                            content = cleanContent,
+                            wordCount = wordCount
+                        )
                     )
-                )
+                }
             }
         }
-        
+
         // Se non ci sono capitoli, crea un capitolo unico con tutto il contenuto
         if (chapters.isEmpty()) {
-            val allContent = htmlFiles.joinToString("\n\n") { cleanHtmlContent(it.second) }
+            val allContent = htmlFiles.values.joinToString("\n\n") { cleanHtmlContent(it) }
             chapters.add(
                 Chapter(
                     index = 0,
@@ -132,6 +148,49 @@ class EpubParser(private val context: Context) {
             chapters = chapters,
             totalCharacters = totalCharacters
         )
+    }
+
+    private fun parseTableOfContents(tocContent: String, htmlFiles: Map<String, String>): List<Chapter> {
+        val chapters = mutableListOf<Chapter>()
+        try {
+            val factory = XmlPullParserFactory.newInstance()
+            factory.isNamespaceAware = true
+            val parser = factory.newPullParser()
+            parser.setInput(tocContent.reader())
+
+            var eventType = parser.eventType
+            var currentChapter: Chapter? = null
+            var chapterIndex = 0
+
+            while (eventType != XmlPullParser.END_DOCUMENT) {
+                when (eventType) {
+                    XmlPullParser.START_TAG -> {
+                        if (parser.name == "navPoint") {
+                            val title = parser.getAttributeValue(null, "playOrder")
+                            val contentSrc = parser.getAttributeValue(null, "src")
+                            
+                            val chapterHtml = htmlFiles[contentSrc]
+                            if(chapterHtml != null) {
+                                val cleanContent = cleanHtmlContent(chapterHtml)
+                                val wordCount = cleanContent.split("\\s+".toRegex()).size
+                                 chapters.add(
+                                    Chapter(
+                                        index = chapterIndex++,
+                                        title = title ?: "Chapter ${chapterIndex}",
+                                        content = cleanContent,
+                                        wordCount = wordCount
+                                    )
+                                )
+                            }
+                        }
+                    }
+                }
+                eventType = parser.next()
+            }
+        } catch (e: Exception) {
+            e.printStackTrace()
+        }
+        return chapters
     }
     
     /**
@@ -184,35 +243,12 @@ class EpubParser(private val context: Context) {
     }
     
     /**
-     * Pulisce il contenuto HTML rimuovendo tag e formattazione
+     * Pulisce il contenuto HTML rimuovendo tag e formattazione non desiderati
      */
     private fun cleanHtmlContent(html: String): String {
-        return html
-            // Rimuovi script e style
-            .replace("<script[^>]*>.*?</script>".toRegex(RegexOption.DOT_MATCHES_ALL), "")
-            .replace("<style[^>]*>.*?</style>".toRegex(RegexOption.DOT_MATCHES_ALL), "")
-            // Converti tag comuni in newline
-            .replace("<br\\s*/?>".toRegex(RegexOption.IGNORE_CASE), "\n")
-            .replace("<p[^>]*>".toRegex(RegexOption.IGNORE_CASE), "\n")
-            .replace("</p>".toRegex(RegexOption.IGNORE_CASE), "\n")
-            .replace("<div[^>]*>".toRegex(RegexOption.IGNORE_CASE), "\n")
-            .replace("</div>".toRegex(RegexOption.IGNORE_CASE), "\n")
-            // Rimuovi tutti gli altri tag HTML
-            .replace("<[^>]+>".toRegex(), "")
-            // Decodifica HTML entities
-            .replace("&nbsp;", " ")
-            .replace("&quot;", "\"")
-            .replace("&apos;", "'")
-            .replace("&amp;", "&")
-            .replace("&lt;", "<")
-            .replace("&gt;", ">")
-            .replace("&#8217;", "'")
-            .replace("&#8220;", "\"")
-            .replace("&#8221;", "\"")
-            // Pulisci whitespace
-            .replace("\\s+".toRegex(), " ")
-            .replace("\n ", "\n")
-            .trim()
+        // Usa il parser HTML di Android per gestire la formattazione di base
+        val spanned = Html.fromHtml(html, Html.FROM_HTML_MODE_LEGACY)
+        return spanned.toString()
     }
     
     /**
