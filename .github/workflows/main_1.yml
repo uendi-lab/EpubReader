@@ -25,6 +25,18 @@ jobs:
     - name: Grant execute permission for gradlew
       run: chmod +x gradlew
     
+    - name: Debug repository
+      run: |
+        echo "PWD:"
+        pwd
+        echo "Root files:"
+        ls -la
+        echo "Wrapper folder:"
+        ls -la gradle/wrapper
+        echo "Jar size:"
+        stat gradle/wrapper/gradle-wrapper.jar || echo "Jar not found"
+        file gradlew
+      
     - name: Build with Gradle
       run: ./gradlew assembleDebug --stacktrace
     
