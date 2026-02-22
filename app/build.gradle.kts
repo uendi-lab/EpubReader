@@ -86,7 +86,7 @@ dependencies {
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.7.3")
 
     // EpubLib
-    implementation("nl.siegmann.epublib:epublib-core:3.1")
+    implementation(files("libs/epublib-core-3.1.jar"))
     implementation("org.jsoup:jsoup:1.17.2")
     
     // Gson for JSON serialization
